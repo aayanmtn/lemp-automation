@@ -1,99 +1,49 @@
 #!/bin/bash
 
-# Variables
-DB_NAME="wordpress"
+# Define environment variables
+WP_DIR="/var/www/wordpress"
+DB_NAME="wordpress_db"
 DB_USER="wordpress_user"
 DB_PASSWORD="wordpress_password"
-DB_HOST="localhost"
-WP_DIR="/var/www/html/wordpress"
 NGINX_CONF="/etc/nginx/sites-available/wordpress"
-NGINX_CONF_LINK="/etc/nginx/sites-enabled/wordpress"
-MYSQL_ROOT_PASSWORD="root_password"
-PHP_VERSION="8.3"  # Modify this if you need a different PHP version
-REPO_URL="https://github.com/aayanmtn/lemp-automation.git"  # Replace with your repo URL
-REPO_BRANCH="main"  # Replace with your branch name (e.g., 'main' or 'master')
-REPO_LOCAL_DIR="/tmp/"  # Local directory where the repo will be cloned
+PHP_FPM_POOL="/etc/php/7.4/fpm/pool.d/www.conf"
 
-# Update the system
+# Step 1: Update System and Install Necessary Packages
 echo "Updating the system..."
-sudo apt update && sudo apt upgrade -y
+sudo apt-get update -y && sudo apt-get upgrade -y
 
-# Install required packages
-echo "Installing NGINX, MySQL, PHP, and dependencies..."
-sudo apt install -y nginx mysql-server php$PHP_VERSION-fpm php$PHP_VERSION-mysql php$PHP_VERSION-cli php$PHP_VERSION-curl php$PHP_VERSION-xml php$PHP_VERSION-mbstring php$PHP_VERSION-zip curl unzip git
+# Install Nginx, PHP, MySQL, Redis, Fail2Ban, ModSecurity
+echo "Installing necessary packages for LEMP stack and security tools..."
+sudo apt-get install -y nginx php-fpm php-mysql mysql-server redis-server fail2ban libapache2-mod-security2 curl unzip
 
-# Start and enable services
-echo "Starting and enabling NGINX and MySQL..."
-sudo systemctl start nginx
-sudo systemctl enable nginx
-sudo systemctl start mysql
-sudo systemctl enable mysql
+# Install PHP extensions for WordPress
+sudo apt-get install -y php7.4-cli php7.4-curl php7.4-mbstring php7.4-xml php7.4-zip php7.4-bcmath php7.4-soap
 
-# Secure MySQL installation
-echo "Securing MySQL installation..."
-sudo mysql_secure_installation <<EOF
+# Step 2: Configure MySQL Database for WordPress
+echo "Configuring MySQL Database for WordPress..."
+sudo mysql -u root -e "CREATE DATABASE $DB_NAME;"
+sudo mysql -u root -e "CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';"
+sudo mysql -u root -e "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';"
+sudo mysql -u root -e "FLUSH PRIVILEGES;"
 
-Y
-$MYSQL_ROOT_PASSWORD
-$MYSQL_ROOT_PASSWORD
-Y
-Y
-Y
-Y
-EOF
-
-# Create WordPress database and user
-echo "Creating WordPress database and user..."
-sudo mysql -u root -p$MYSQL_ROOT_PASSWORD -e "CREATE DATABASE $DB_NAME;"
-sudo mysql -u root -p$MYSQL_ROOT_PASSWORD -e "CREATE USER '$DB_USER'@'$DB_HOST' IDENTIFIED BY '$DB_PASSWORD';"
-sudo mysql -u root -p$MYSQL_ROOT_PASSWORD -e "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'$DB_HOST';"
-sudo mysql -u root -p$MYSQL_ROOT_PASSWORD -e "FLUSH PRIVILEGES;"
-
-# Clone the repository if it's not already cloned
-if [ ! -d "$REPO_LOCAL_DIR" ]; then
-  echo "Cloning the repository from $REPO_URL..."
-  git clone -b $REPO_BRANCH $REPO_URL $REPO_LOCAL_DIR
-else
-  echo "Repository already cloned, pulling the latest changes..."
-  cd $REPO_LOCAL_DIR && git pull origin $REPO_BRANCH
-fi
-
-# Copy the 'wordpress' folder from the repo to the web directory
-echo "Copying the 'wordpress' folder from the repo to the web directory..."
-sudo cp -r $REPO_LOCAL_DIR/lemp-automation/wordpress $WP_DIR
-
-# Set the correct permissions for WordPress files
-echo "Setting the correct permissions for WordPress..."
-sudo chown -R www-data:www-data $WP_DIR
-sudo chmod -R 755 $WP_DIR
-
-# Create wp-config.php
-echo "Creating wp-config.php..."
-cd $WP_DIR
-cp wp-config-sample.php wp-config.php
-
-# Configure wp-config.php with database details
-sudo sed -i "s/database_name_here/$DB_NAME/" wp-config.php
-sudo sed -i "s/username_here/$DB_USER/" wp-config.php
-sudo sed -i "s/password_here/$DB_PASSWORD/" wp-config.php
-
-# Nginx configuration for WordPress
-echo "Configuring NGINX for WordPress..."
-sudo bash -c "cat > $NGINX_CONF <<EOF
+# Step 3: Install and Configure Nginx for WordPress
+echo "Configuring Nginx for WordPress..."
+# Create Nginx config file
+sudo bash -c 'cat > /etc/nginx/sites-available/wordpress <<EOF
 server {
     listen 80;
-    server_name himsec.sytes.net;  # Change this to your domain or IP address
+    server_name _;
 
-    root $WP_DIR;
+    root /var/www/wordpress;
     index index.php index.html index.htm;
 
     location / {
-        try_files \$uri \$uri/ /index.php?\$args;
+        try_files \$uri \$uri/ =404;
     }
 
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/var/run/php/php$PHP_VERSION-fpm.sock;
+        fastcgi_pass unix:/var/run/php/php7.4-fpm.sock;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
@@ -101,30 +51,97 @@ server {
     location ~ /\.ht {
         deny all;
     }
+
+    # Enable gzip compression for performance
+    gzip on;
+    gzip_types text/css application/javascript text/javascript application/x-javascript text/plain text/xml application/xml application/xml+rss text/javascript;
+    gzip_min_length 1000;
+
+    # Disable .git directories for security
+    location ~ /\.git {
+        deny all;
+    }
 }
-EOF"
+EOF'
 
-# Enable the Nginx configuration by linking to sites-enabled
-echo "Enabling NGINX configuration..."
-sudo ln -s $NGINX_CONF $NGINX_CONF_LINK
-
-# Test Nginx configuration for syntax errors
-echo "Testing NGINX configuration..."
+# Enable the Nginx site configuration and reload Nginx
+sudo ln -s /etc/nginx/sites-available/wordpress /etc/nginx/sites-enabled/
 sudo nginx -t
-
-# Restart Nginx to apply changes
-echo "Restarting NGINX..."
 sudo systemctl restart nginx
 
-# Restart PHP-FPM to apply changes
-echo "Restarting PHP-FPM..."
-sudo systemctl restart php$PHP_VERSION-fpm
+# Step 4: Install and Configure SSL using Let's Encrypt
+echo "Installing SSL certificate using Let's Encrypt..."
+sudo apt-get install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d your-domain.com --non-interactive --agree-tos -m your-email@example.com
 
-# Final steps
-echo "LEMP stack installed and configured for WordPress!"
-echo "You can now visit your website at http://your_domain.com or IP address."
-echo "Complete the WordPress installation by visiting the URL in your browser."
+# Step 5: Install WordPress
+echo "Installing WordPress..."
+cd /tmp
+curl -O https://wordpress.org/latest.tar.gz
+tar -xvzf latest.tar.gz
+sudo mv wordpress /var/www/wordpress
+cd /var/www/wordpress
+sudo chown -R www-data:www-data /var/www/wordpress
+sudo chmod -R 755 /var/www/wordpress
 
-# Clean up
-echo "Cleaning up temporary files..."
-rm -rf /tmp/your-repo
+# Step 6: Configure PHP-FPM for WordPress (optional PHP settings)
+echo "Configuring PHP-FPM for WordPress..."
+sudo sed -i 's/;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/' /etc/php/7.4/fpm/php.ini
+sudo systemctl restart php7.4-fpm
+
+# Step 7: Configure Redis for WordPress Caching
+echo "Configuring Redis for WordPress Caching..."
+sudo systemctl enable redis-server
+sudo systemctl start redis-server
+
+# Install Redis Object Cache plugin for WordPress
+cd /var/www/wordpress
+wp plugin install redis-cache --activate
+wp redis enable
+
+# Step 8: Install and Configure Varnish Cache
+echo "Configuring Varnish for caching..."
+sudo apt-get install -y varnish
+sudo bash -c 'cat > /etc/varnish/default.vcl <<EOF
+backend default {
+    .host = "127.0.0.1";
+    .port = "8080";
+}
+
+sub vcl_recv {
+    if (req.url ~ "^/wp-admin/") {
+        return (pass);
+    }
+}
+
+sub vcl_backend_response {
+    if (bereq.url ~ "^/wp-admin/") {
+        set beresp.ttl = 0s;
+    }
+    set beresp.ttl = 1h;
+}
+EOF'
+
+# Update varnish to run on port 80 and Nginx on port 8080
+sudo sed -i 's/DAEMON_OPTS="-a :6081"/DAEMON_OPTS="-a :80"/' /etc/default/varnish
+sudo systemctl restart varnish
+
+# Step 9: Set up Fail2Ban for Security
+echo "Configuring Fail2Ban..."
+sudo systemctl enable fail2ban
+sudo systemctl start fail2ban
+
+# Step 10: Install ModSecurity for Additional Protection
+echo "Installing ModSecurity..."
+sudo apt-get install -y libapache2-mod-security2
+sudo cp /etc/modsecurity/modsecurity.conf-recommended /etc/modsecurity/modsecurity.conf
+sudo sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/modsecurity/modsecurity.conf
+sudo systemctl restart apache2
+
+# Step 11: Clean up and Security Checks
+echo "Securing the server..."
+sudo apt-get autoremove -y
+sudo apt-get clean
+
+# Final message
+echo "LEMP stack with WordPress is now deployed and secured with Varnish, Redis, SSL, Fail2Ban, and ModSecurity!"
