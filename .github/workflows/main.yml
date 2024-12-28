@@ -33,17 +33,17 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.REMOTE_HOST }} >> ~/.ssh/known_hosts
 
-      # Step 5: Copy repository files to EC2 instance
+      # Step 5: Copy repository files, including deploy.sh, to EC2 instance
       - name: Copy files to EC2 instance
         run: |
           echo "Copying repository files to the EC2 instance..."
           rsync -avz --exclude '.git' ./ ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }}:/home/${{ secrets.REMOTE_USER }}/
 
-      # Step 6: Run the deploy script on EC2
+      # Step 6: Run the deploy.sh script on EC2
       - name: Run deployment script
         run: |
           echo "Running deploy.sh script on EC2..."
-          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} 'bash -s' < ./deploy.sh
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} 'bash /home/${{ secrets.REMOTE_USER }}/deploy.sh'
 
       # Step 7: Clean up
       - name: Clean up
