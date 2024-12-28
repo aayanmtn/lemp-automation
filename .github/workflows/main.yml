@@ -33,19 +33,32 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.REMOTE_HOST }} >> ~/.ssh/known_hosts
 
-      # Step 5: Copy repository files, including deploy.sh, to EC2 instance
-      - name: Copy files to EC2 instance
+      # Step 5: Remove all files in the target directory and copy new files
+      - name: Remove all files and copy new files to EC2 instance
         run: |
-          echo "Copying repository files to the EC2 instance..."
+          echo "Removing all files from the target directory on EC2..."
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} << 'EOF'
+            # Remove all files and directories in the target directory
+            rm -rf /home/${{ secrets.REMOTE_USER }}/*
+          EOF
+          
+          echo "Copying new repository files to the EC2 instance..."
           rsync -avz --exclude '.git' ./ ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }}:/home/${{ secrets.REMOTE_USER }}/
 
-      # Step 6: Copy wordpress folder to www folder
-      - name: Copy wordpress folder to www folder
+      # Step 6: Remove existing WordPress folder and copy the new one
+      - name: Remove existing WordPress folder and copy new one
         run: |
-         echo "Copying wordpress folder to the www folder..."
-         cp -r wordpress /var/www/
-         chown -R www-data:www-data /var/www/wordpress/wp-content
-         chmod -R 755 /var/www/wordpress/wp-content
+          echo "Checking if WordPress folder exists and removing it if necessary..."
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} << 'EOF'
+            if [ -d "/var/www/wordpress" ]; then
+              echo "Removing existing WordPress folder..."
+              sudo rm -rf /var/www/wordpress
+            fi
+            echo "Copying new WordPress folder..."
+            sudo cp -r /home/${{ secrets.REMOTE_USER }}/wordpress /var/www/
+            sudo chown -R www-data:www-data /var/www/wordpress/wp-content
+            sudo chmod -R 755 /var/www/wordpress/wp-content
+          EOF
 
       # Step 7: Run the deploy.sh script on EC2
       - name: Run deployment script
