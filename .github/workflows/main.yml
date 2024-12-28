@@ -27,19 +27,25 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y curl unzip rsync
 
-      # Step 4: Copy repository files to EC2 instance
+      # Step 4: Add EC2 instance to known_hosts to avoid SSH host verification
+      - name: Add EC2 instance to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.REMOTE_HOST }} >> ~/.ssh/known_hosts
+
+      # Step 5: Copy repository files to EC2 instance
       - name: Copy files to EC2 instance
         run: |
           echo "Copying repository files to the EC2 instance..."
           rsync -avz --exclude '.git' ./ ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }}:/home/${{ secrets.REMOTE_USER }}/
 
-      # Step 5: Deploy LEMP stack and WordPress using deploy.sh script
+      # Step 6: Run the deploy script on EC2
       - name: Run deployment script
         run: |
           echo "Running deploy.sh script on EC2..."
           ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} 'bash -s' < ./deploy.sh
 
-      # Step 6: Clean up
+      # Step 7: Clean up
       - name: Clean up
         run: |
           echo "Deployment completed successfully!"
