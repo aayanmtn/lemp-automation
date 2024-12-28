@@ -1,60 +1,45 @@
-name: WordPress Deployment
+name: Deploy LEMP Stack with WordPress
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches:
+      - main  # Trigger deployment when pushing to the main branch
 
 jobs:
   deploy:
+    name: Deploy to EC2
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v2
+      # Step 1: Checkout repository files
+      - name: Checkout repository
+        uses: actions/checkout@v2
 
-      - name: Setup PHP
-        uses: shivammathur/setup-php@v2
+      # Step 2: Set up SSH key for EC2 access
+      - name: Set up SSH key for EC2 access
+        uses: webfactory/ssh-agent@v0.5.3
         with:
-          php-version: '8.1'
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
-      - name: Install dependencies
+      # Step 3: Install necessary tools
+      - name: Install necessary tools
         run: |
-          composer install --no-dev --optimize-autoloader
-          npm ci
-          npm run build
+          sudo apt-get update -y
+          sudo apt-get install -y curl unzip rsync
 
-      - name: Setup SSH
+      # Step 4: Copy repository files to EC2 instance
+      - name: Copy files to EC2 instance
         run: |
-          mkdir -p ~/.ssh/
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+          echo "Copying repository files to the EC2 instance..."
+          rsync -avz --exclude '.git' ./ ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }}:/home/${{ secrets.REMOTE_USER }}/
 
-      - name: Deploy to server
+      # Step 5: Deploy LEMP stack and WordPress using deploy.sh script
+      - name: Run deployment script
         run: |
-          rsync -avz --delete \
-            -e "ssh -i ~/.ssh/deploy_key" \
-            --exclude='.git*' \
-            --exclude='node_modules' \
-            --exclude='tests' \
-            ./ ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }}:/var/www/wordpress/
+          echo "Running deploy.sh script on EC2..."
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} 'bash -s' < ./deploy.sh
 
-      - name: Post-deployment tasks
+      # Step 6: Clean up
+      - name: Clean up
         run: |
-          ssh -i ~/.ssh/deploy_key ${{ secrets.SERVER_USERNAME }}@${{ secrets.SERVER_HOST }} '
-            cd /var/www/wordpress
-            wp cache flush
-            sudo systemctl reload nginx
-          '
-
-      - name: Security scan
-        run: |
-          npm install @wordpress/scripts
-          npx wp-scripts security-scan
-
-      - name: Notification
-        if: always()
-        uses: rtCamp/action-slack-notify@v2
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          SLACK_MESSAGE: 'Deployment ${{ job.status }}'
+          echo "Deployment completed successfully!"
