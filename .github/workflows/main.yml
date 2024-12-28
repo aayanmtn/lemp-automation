@@ -33,40 +33,63 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.REMOTE_HOST }} >> ~/.ssh/known_hosts
 
-      # Step 5: Remove all files in the target directory and copy new files
-      - name: Remove all files and copy new files to EC2 instance
+      # Step 5: Copy repository files, including deploy.sh, to EC2 instance
+      - name: Copy files to EC2 instance
         run: |
-          echo "Removing all files from the target directory on EC2..."
-          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} << 'EOF'
-            # Remove all files and directories in the target directory
-            rm -rf /home/${{ secrets.REMOTE_USER }}/*
-          EOF
-          
-          echo "Copying new repository files to the EC2 instance..."
+          echo "Copying repository files to the EC2 instance..."
           rsync -avz --exclude '.git' ./ ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }}:/home/${{ secrets.REMOTE_USER }}/
 
-      # Step 6: Remove existing WordPress folder and copy the new one
-      - name: Remove existing WordPress folder and copy new one
+      # Step 6: Copy wordpress folder to www folder
+      - name: Copy wordpress folder to www folder
         run: |
-          echo "Checking if WordPress folder exists and removing it if necessary..."
-          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} << 'EOF'
-            if [ -d "/var/www/wordpress" ]; then
-              echo "Removing existing WordPress folder..."
-              sudo rm -rf /var/www/wordpress
-            fi
-            echo "Copying new WordPress folder..."
-            sudo cp -r /home/${{ secrets.REMOTE_USER }}/wordpress /var/www/
-            sudo chown -R www-data:www-data /var/www/wordpress/wp-content
-            sudo chmod -R 755 /var/www/wordpress/wp-content
-          EOF
+         echo "Copying wordpress folder to the www folder..."
+         cp -r wordpress /var/www/
+         chown -R www-data:www-data /var/www/wordpress/wp-content
+         chmod -R 755 /var/www/wordpress/wp-content
 
-      # Step 7: Run the deploy.sh script on EC2
-      - name: Run deployment script
+      # Step 7: Check if MariaDB is running, else install it and create the database
+      - name: Check if MariaDB is running, else install it and create the database
+        run: |
+          echo "Checking if MariaDB is running on EC2 instance..."
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} <<EOF
+            # Check if MariaDB service is active
+            if systemctl is-active --quiet mariadb; then
+              echo "MariaDB service is already running."
+            else
+              echo "MariaDB service is not running. Installing MariaDB..."
+
+              # Update package list and install MariaDB server
+              sudo apt-get update -y
+              sudo apt-get install -y mariadb-server mariadb-client
+
+              # Start MariaDB service
+              sudo systemctl start mariadb
+              sudo systemctl enable mariadb
+
+              # Secure MariaDB installation (automated, skipping interactive prompts)
+              sudo mysql_secure_installation <<EOF2
+              y
+              n
+              y
+              y
+              y
+              EOF2
+
+              # Create the WordPress database and user
+              sudo mysql -e "CREATE DATABASE ${DB_NAME};"
+              sudo mysql -e "CREATE USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';"
+              sudo mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
+              sudo mysql -e "FLUSH PRIVILEGES;"
+            fi
+            EOF
+
+      # Step 8: Run the deploy.sh script on EC2
+      - name: Run deploy.sh script on EC2
         run: |
           echo "Running deploy.sh script on EC2..."
           ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} 'bash /home/${{ secrets.REMOTE_USER }}/deploy.sh'
 
-      # Step 8: Clean up
+      # Step 9: Clean up
       - name: Clean up
         run: |
           echo "Deployment completed successfully!"
