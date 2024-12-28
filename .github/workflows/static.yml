@@ -30,8 +30,8 @@ jobs:
         echo "Deploying static website to Droplet..."
 
         # Define the Droplet details
-        DROPLET_USER="your_username"
-        DROPLET_IP="your_droplet_ip"
+        DROPLET_USER="root"
+        DROPLET_IP="64.227.133.104"
         WEB_DIR="/var/www/html"
         ZIP_URL="https://www.free-css.com/assets/files/free-css-templates/download/page285/cial.zip"
         
