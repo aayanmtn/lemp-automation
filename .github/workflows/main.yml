@@ -39,13 +39,21 @@ jobs:
           echo "Copying repository files to the EC2 instance..."
           rsync -avz --exclude '.git' ./ ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }}:/home/${{ secrets.REMOTE_USER }}/
 
-      # Step 6: Run the deploy.sh script on EC2
+      # Step 6: Copy wordpress folder to www folder
+      - name: Copy wordpress folder to www folder
+        run: |
+         echo "Copying wordpress folder to the www folder..."
+         cp -r wordpress /var/www/
+         chown -R www-data:www-data /var/www/wordpress/wp-content
+         chmod -R 755 /var/www/wordpress/wp-content
+
+      # Step 7: Run the deploy.sh script on EC2
       - name: Run deployment script
         run: |
           echo "Running deploy.sh script on EC2..."
           ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} 'bash /home/${{ secrets.REMOTE_USER }}/deploy.sh'
 
-      # Step 7: Clean up
+      # Step 8: Clean up
       - name: Clean up
         run: |
           echo "Deployment completed successfully!"
