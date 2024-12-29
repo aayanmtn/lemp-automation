@@ -42,10 +42,12 @@ jobs:
       # Step 6: Copy wordpress folder to www folder
       - name: Copy wordpress folder to www folder
         run: |
-         echo "Copying wordpress folder to the www folder..."
-         cp -r wordpress /var/www/
-         chown -R www-data:www-data /var/www/wordpress/wp-content
-         chmod -R 755 /var/www/wordpress/wp-content
+          echo "Copying wordpress folder to the www folder..."
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} <<EOF
+            sudo cp -r /home/${{ secrets.REMOTE_USER }}/wordpress /var/www/
+            sudo chown -R www-data:www-data /var/www/wordpress/wp-content
+            sudo chmod -R 755 /var/www/wordpress/wp-content
+          EOF
 
       # Step 7: Check if MariaDB is running, else install it and create the database
       - name: Check if MariaDB is running, else install it and create the database
@@ -65,31 +67,53 @@ jobs:
               # Start MariaDB service
               sudo systemctl start mariadb
               sudo systemctl enable mariadb
-
-              # Secure MariaDB installation (automated, skipping interactive prompts)
-              sudo mysql_secure_installation <<EOF2
-              y
-              n
-              y
-              y
-              y
-              EOF2
-
-              # Create the WordPress database and user
-              sudo mysql -e "CREATE DATABASE ${DB_NAME};"
-              sudo mysql -e "CREATE USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';"
-              sudo mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
-              sudo mysql -e "FLUSH PRIVILEGES;"
             fi
-            EOF
 
-      # Step 8: Run the deploy.sh script on EC2
+            # Create the WordPress database and user (using GitHub Secrets for security)
+            sudo mysql -e "CREATE DATABASE ${DB_NAME};"
+            sudo mysql -e "CREATE USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';"
+            sudo mysql -e "GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';"
+            sudo mysql -e "FLUSH PRIVILEGES;"
+          EOF
+
+      # Step 8: Check if wp-config.php exists, if not, create it from wp-config-sample.php
+      - name: Configure wp-config.php
+        run: |
+          echo "Checking if wp-config.php exists, if not creating from wp-config-sample.php..."
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} <<EOF
+            cd /var/www/wordpress
+
+            # Check if wp-config.php exists
+            if [ ! -f wp-config.php ]; then
+              # Create wp-config.php from wp-config-sample.php
+              cp wp-config-sample.php wp-config.php
+
+              # Replace placeholders in wp-config.php with actual values
+              sed -i "s/database_name_here/${DB_NAME}/g" wp-config.php
+              sed -i "s/username_here/${DB_USER}/g" wp-config.php
+              sed -i "s/password_here/${DB_PASSWORD}/g" wp-config.php
+
+              # Optional: Set WP_HOME and WP_SITEURL (if needed)
+              sed -i "s|'WP_HOME', 'http://example.com'|'WP_HOME', '${WP_HOME}'|g" wp-config.php
+              sed -i "s|'WP_SITEURL', 'http://example.com/wordpress'|'WP_SITEURL', '${WP_SITEURL}'|g" wp-config.php
+
+              # Set proper file permissions
+              sudo chown www-data:www-data wp-config.php
+              sudo chmod 644 wp-config.php
+
+              echo "wp-config.php has been created and configured."
+            else
+              echo "wp-config.php already exists, skipping creation."
+            fi
+          EOF
+
+      # Step 9: Run the deploy.sh script on EC2
       - name: Run deploy.sh script on EC2
         run: |
           echo "Running deploy.sh script on EC2..."
           ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER }}@${{ secrets.REMOTE_HOST }} 'bash /home/${{ secrets.REMOTE_USER }}/deploy.sh'
 
-      # Step 9: Clean up
+      # Step 10: Clean up
       - name: Clean up
         run: |
           echo "Deployment completed successfully!"
