@@ -1,5 +1,5 @@
 # WordPress DevOps Deployment Solution
-
+# Under prossesss
 ## Overview
 This repository contains an automated deployment setup for a WordPress website using the LEMP stack (Linux, Nginx, MySQL, PHP) and GitHub Actions for CI/CD. The solution includes server provisioning scripts, configuration files, and deployment workflows.
 
