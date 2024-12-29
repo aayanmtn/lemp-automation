@@ -1,49 +1,108 @@
 #!/bin/bash
 
-# Define environment variables
-WP_DIR="/var/www/wordpress"
-DB_NAME="wordpress_db"
-DB_USER="wordpress_user"
-DB_PASSWORD="wordpress_password"
+set -e
+
+# Function to check if a package is installed
+function check_package {
+  if ! dpkg -l | grep -q "$1"; then
+    echo "$1 is not installed. Installing..."
+    sudo apt-get install -y "$1"
+  else
+    echo "$1 is already installed."
+  fi
+}
+
+# Function to check if a service is running
+function check_service {
+  if ! systemctl is-active --quiet "$1"; then
+    echo "$1 is not running. Starting it..."
+    sudo systemctl start "$1"
+  else
+    echo "$1 is running."
+  fi
+}
+
+# Function to generate a Salt key (password)
+function generate_salt_key {
+  # Create a random Salt key (16 characters)
+  SALT_KEY=$(openssl rand -base64 16)
+  echo "Generated Salt key: $SALT_KEY"
+  
+  # Store the Salt key in a file
+  echo "$SALT_KEY" > /etc/secret/salt_key.txt
+  echo "Salt key saved to /etc/secret/salt_key.txt"
+}
+
+# Function to replace the default Salt key in the configuration file
+function replace_salt_key_in_file {
+  local file=$1
+  local default_key=$2
+  local salt_key=$3
+  
+  if grep -q "$default_key" "$file"; then
+    echo "Replacing default Salt key in $file with the new Salt key..."
+    sudo sed -i "s/$default_key/$salt_key/" "$file"
+    echo "Salt key replaced successfully."
+  else
+    echo "No default key found in $file. Adding the new Salt key..."
+    echo "$salt_key" | sudo tee -a "$file" > /dev/null
+    echo "Salt key added successfully."
+  fi
+}
+
+# Step 1: Update and upgrade the system
+echo "Updating system packages..."
+sudo apt-get update -y
+sudo apt-get upgrade -y
+
+# Step 2: Generate and store Salt key (this will replace the default password/key)
+generate_salt_key
+
+# Step 3: Install and configure PHP and required extensions for WordPress
+echo "Installing PHP and required extensions..."
+
+# Get the current PHP version installed on the system (defaulting to PHP 8.1 if not found)
+PHP_VERSION=$(php -v | head -n 1 | awk '{print $2}' | cut -d. -f1,2)  # Example: 7.4 or 8.1
+if [ -z "$PHP_VERSION" ]; then
+  PHP_VERSION="8.1"
+fi
+
+# Install PHP-FPM and required extensions dynamically based on the current PHP version
+check_package "php${PHP_VERSION}-fpm"
+check_package "php${PHP_VERSION}-mysql"
+check_package "php${PHP_VERSION}-cli"
+check_package "php${PHP_VERSION}-curl"
+check_package "php${PHP_VERSION}-xml"
+check_package "php${PHP_VERSION}-mbstring"
+check_package "php${PHP_VERSION}-json"
+check_package "php${PHP_VERSION}-zip"
+check_package "php${PHP_VERSION}-gd"
+check_package "php${PHP_VERSION}-imagick"
+check_package "php${PHP_VERSION}-redis"
+
+# Step 4: Install and configure Nginx for WordPress
+echo "Installing and configuring Nginx for WordPress..."
+
+# Install Nginx if not already installed
+check_package nginx
+
+# Create a basic Nginx configuration for WordPress
 NGINX_CONF="/etc/nginx/sites-available/wordpress"
-PHP_FPM_POOL="/etc/php/7.4/fpm/pool.d/www.conf"
-
-# Step 1: Update System and Install Necessary Packages
-echo "Updating the system..."
-sudo apt-get update -y && sudo apt-get upgrade -y
-
-# Install Nginx, PHP, MySQL, Redis, Fail2Ban, ModSecurity
-echo "Installing necessary packages for LEMP stack and security tools..."
-sudo apt-get install -y nginx php-fpm php-mysql mysql-server redis-server fail2ban libapache2-mod-security2 curl unzip
-
-# Install PHP extensions for WordPress
-sudo apt-get install -y php7.4-cli php7.4-curl php7.4-mbstring php7.4-xml php7.4-zip php7.4-bcmath php7.4-soap
-
-# Step 2: Configure MySQL Database for WordPress
-echo "Configuring MySQL Database for WordPress..."
-sudo mysql -u root -e "CREATE DATABASE $DB_NAME;"
-sudo mysql -u root -e "CREATE USER '$DB_USER'@'localhost' IDENTIFIED BY '$DB_PASSWORD';"
-sudo mysql -u root -e "GRANT ALL PRIVILEGES ON $DB_NAME.* TO '$DB_USER'@'localhost';"
-sudo mysql -u root -e "FLUSH PRIVILEGES;"
-
-# Step 3: Install and Configure Nginx for WordPress
-echo "Configuring Nginx for WordPress..."
-# Create Nginx config file
-sudo bash -c 'cat > /etc/nginx/sites-available/wordpress <<EOF
+sudo bash -c "cat > $NGINX_CONF" <<EOL
 server {
     listen 80;
-    server_name _;
+    server_name ${SERVER_NAME};  # Set your server name here (e.g., example.com)
 
     root /var/www/wordpress;
     index index.php index.html index.htm;
 
     location / {
-        try_files \$uri \$uri/ =404;
+        try_files \$uri \$uri/ /index.php?\$args;
     }
 
     location ~ \.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/var/run/php/php7.4-fpm.sock;
+        fastcgi_pass unix:/var/run/php/php${PHP_VERSION}-fpm.sock;
         fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
         include fastcgi_params;
     }
@@ -52,96 +111,110 @@ server {
         deny all;
     }
 
-    # Enable gzip compression for performance
-    gzip on;
-    gzip_types text/css application/javascript text/javascript application/x-javascript text/plain text/xml application/xml application/xml+rss text/javascript;
-    gzip_min_length 1000;
-
-    # Disable .git directories for security
-    location ~ /\.git {
-        deny all;
-    }
+    access_log /var/log/nginx/wordpress_access.log;
+    error_log /var/log/nginx/wordpress_error.log;
 }
-EOF'
+EOL
 
-# Enable the Nginx site configuration and reload Nginx
+# Enable the site by creating a symbolic link
 sudo ln -s /etc/nginx/sites-available/wordpress /etc/nginx/sites-enabled/
+
+# Test the Nginx configuration
 sudo nginx -t
+
+# Restart Nginx to apply the changes
 sudo systemctl restart nginx
 
-# Step 4: Install and Configure SSL using Let's Encrypt
-echo "Installing SSL certificate using Let's Encrypt..."
-sudo apt-get install -y certbot python3-certbot-nginx
-sudo certbot --nginx -d your-domain.com --non-interactive --agree-tos -m your-email@example.com
+# Step 5: Install and configure Redis (with Salt key for security)
+check_package redis-server
 
-# Step 5: Install WordPress
-echo "Installing WordPress..."
-cd /tmp
-curl -O https://wordpress.org/latest.tar.gz
-tar -xvzf latest.tar.gz
-sudo mv wordpress /var/www/wordpress
-cd /var/www/wordpress
-sudo chown -R www-data:www-data /var/www/wordpress
-sudo chmod -R 755 /var/www/wordpress
+# Configure Redis to use Salt key for password protection
+if ! systemctl is-active --quiet redis-server; then
+  echo "Configuring Redis with Salt key..."
+  SALT_KEY=$(cat /etc/secret/salt_key.txt)  # Read the Salt key from the file
+  sudo sed -i "s/^# requirepass .*/requirepass $SALT_KEY/" /etc/redis/redis.conf
+  sudo systemctl restart redis-server
+else
+  echo "Redis is already installed and running."
+fi
 
-# Step 6: Configure PHP-FPM for WordPress (optional PHP settings)
-echo "Configuring PHP-FPM for WordPress..."
-sudo sed -i 's/;cgi.fix_pathinfo=1/cgi.fix_pathinfo=0/' /etc/php/7.4/fpm/php.ini
-sudo systemctl restart php7.4-fpm
+# Step 6: Replace default Salt key in wp-config.php if needed
+WP_CONFIG_FILE="/var/www/wordpress/wp-config.php"
 
-# Step 7: Configure Redis for WordPress Caching
-echo "Configuring Redis for WordPress Caching..."
-sudo systemctl enable redis-server
-sudo systemctl start redis-server
+# Replace the default Salt keys in wp-config.php
+echo "Replacing default WordPress Salt keys in wp-config.php..."
+DEFAULT_SALT="put your unique phrase here"
+replace_salt_key_in_file "$WP_CONFIG_FILE" "$DEFAULT_SALT" "$(cat /etc/secret/salt_key.txt)"
 
-# Install Redis Object Cache plugin for WordPress
-cd /var/www/wordpress
-wp plugin install redis-cache --activate
-wp redis enable
+# Step 7: Install Fail2Ban if not installed
+check_package fail2ban
 
-# Step 8: Install and Configure Varnish Cache
-echo "Configuring Varnish for caching..."
-sudo apt-get install -y varnish
-sudo bash -c 'cat > /etc/varnish/default.vcl <<EOF
+# Configure Fail2Ban for Nginx if not already configured
+if ! test -f "/etc/fail2ban/jail.d/nginx-http-auth.conf"; then
+  echo "Configuring Fail2Ban..."
+  sudo bash -c 'cat > /etc/fail2ban/jail.d/nginx-http-auth.conf' <<EOL
+[nginx-http-auth]
+enabled = true
+port    = http,https
+filter  = nginx-http-auth
+logpath = /var/log/nginx/error.log
+maxretry = 3
+EOL
+  sudo systemctl restart fail2ban
+else
+  echo "Fail2Ban is already configured."
+fi
+
+# Step 8: Install and configure ModSecurity for Nginx if not installed
+check_package libnginx-mod-security
+
+# Enable ModSecurity module in Nginx if not already configured
+if ! test -f "/etc/nginx/modsec/main.conf"; then
+  echo "Configuring ModSecurity..."
+  sudo bash -c 'cat > /etc/nginx/modsec/main.conf' <<EOL
+SecRuleEngine On
+SecRequestBodyAccess On
+SecResponseBodyAccess Off
+SecRule ARGS|ARGS_NAMES|REQUEST_HEADERS|XML:/* "@rx wp-login.php" \
+  "phase:2,deny,status:403,msg:'WordPress login attempt blocked'"
+EOL
+  sudo sed -i 's|#include /etc/nginx/modsec/*.conf;|include /etc/nginx/modsec/main.conf;|' /etc/nginx/nginx.conf
+  sudo nginx -t && sudo systemctl reload nginx
+else
+  echo "ModSecurity is already configured."
+fi
+
+# Step 9: Install and configure Let's Encrypt SSL if not already installed
+check_package certbot
+check_package python3-certbot-nginx
+
+# Install SSL certificate only if not already issued
+if ! certbot certificates | grep -q "${SERVER_NAME}"; then
+  echo "Installing Let's Encrypt SSL certificates..."
+  sudo certbot --nginx -d ${SERVER_NAME} --non-interactive --agree-tos -m ${EMAIL}
+  
+  # Set up auto-renewal for Let's Encrypt if not already set up
+  if ! systemctl is-enabled --quiet certbot.timer; then
+    echo "Setting up automatic SSL certificate renewal..."
+    sudo systemctl enable certbot.timer
+    sudo systemctl start certbot.timer
+  else
+    echo "Automatic SSL certificate renewal is already set up."
+  fi
+else
+  echo "Let's Encrypt SSL certificates are already installed."
+fi
+
+# Step 10: Install and configure Varnish if not already configured
+if ! systemctl is-active --quiet varnish; then
+  echo "Configuring Varnish Cache..."
+
+  # Varnish configuration file for WordPress
+  VARNISH_CONF="/etc/varnish/default.vcl"
+  sudo bash -c "cat > $VARNISH_CONF" <<EOL
+vcl 4.0;
+import std;
+
 backend default {
     .host = "127.0.0.1";
-    .port = "8080";
-}
-
-sub vcl_recv {
-    if (req.url ~ "^/wp-admin/") {
-        return (pass);
-    }
-}
-
-sub vcl_backend_response {
-    if (bereq.url ~ "^/wp-admin/") {
-        set beresp.ttl = 0s;
-    }
-    set beresp.ttl = 1h;
-}
-EOF'
-
-# Update varnish to run on port 80 and Nginx on port 8080
-sudo sed -i 's/DAEMON_OPTS="-a :6081"/DAEMON_OPTS="-a :80"/' /etc/default/varnish
-sudo systemctl restart varnish
-
-# Step 9: Set up Fail2Ban for Security
-echo "Configuring Fail2Ban..."
-sudo systemctl enable fail2ban
-sudo systemctl start fail2ban
-
-# Step 10: Install ModSecurity for Additional Protection
-echo "Installing ModSecurity..."
-sudo apt-get install -y libapache2-mod-security2
-sudo cp /etc/modsecurity/modsecurity.conf-recommended /etc/modsecurity/modsecurity.conf
-sudo sed -i 's/SecRuleEngine DetectionOnly/SecRuleEngine On/' /etc/modsecurity/modsecurity.conf
-sudo systemctl restart apache2
-
-# Step 11: Clean up and Security Checks
-echo "Securing the server..."
-sudo apt-get autoremove -y
-sudo apt-get clean
-
-# Final message
-echo "LEMP stack with WordPress is now deployed and secured with Varnish, Redis, SSL, Fail2Ban, and ModSecurity!"
+    .port =
